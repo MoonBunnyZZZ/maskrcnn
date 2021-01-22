@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/../Mask_RCNN-master/.idea/Mask_RCNN-master.iml" filepath="$PROJECT_DIR$/../Mask_RCNN-master/.idea/Mask_RCNN-master.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../../tszs/keras-io/.idea/keras-io.iml" filepath="$PROJECT_DIR$/../../tszs/keras-io/.idea/keras-io.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/maskrcnn.iml" filepath="$PROJECT_DIR$/.idea/maskrcnn.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../../tszs/py-faster-rcnn/.idea/py-faster-rcnn.iml" filepath="$PROJECT_DIR$/../../tszs/py-faster-rcnn/.idea/py-faster-rcnn.iml" />
+    </modules>
+  </component>
+</project>
