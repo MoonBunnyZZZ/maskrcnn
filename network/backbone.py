@@ -66,7 +66,7 @@ def fpn(c3, c4, c5):
     p3_output = keras.layers.Conv2D(256, 3, 1, "same", name="p3_conv_3x3")(p3_output)
     p4_output = keras.layers.Conv2D(256, 3, 1, "same", name="p4_conv_3x3")(p4_output)
     p5_output = keras.layers.Conv2D(256, 3, 1, "same", name="p5_conv_3x3")(p5_output)
-    p6_output = keras.layers.MaxPool2D((1, 1), 2, name="p6_maxpool")(c5)
+    p6_output = keras.layers.MaxPool2D((1, 1), 2, name="p6_maxpool")(p5_output)
     return p3_output, p4_output, p5_output, p6_output
 
 

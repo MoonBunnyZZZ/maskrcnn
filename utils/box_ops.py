@@ -31,7 +31,7 @@ def box_iou(boxes1, boxes2):
     lt = np.maximum(boxes1[:, None, :2], boxes2[:, :2])  # [N,M,2]
     rb = np.minimum(boxes1[:, None, 2:], boxes2[:, 2:])  # [N,M,2]
 
-    wh = (rb - lt).clamp(min=0)  # [N,M,2]
+    wh = (rb - lt).clip(min=0)  # [N,M,2]
     inter = wh[:, :, 0] * wh[:, :, 1]  # [N,M]
 
     iou = inter / (area1[:, None] + area2 - inter)
