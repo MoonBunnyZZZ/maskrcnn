@@ -20,7 +20,7 @@ def set_cell_anchors(sizes, aspect_ratios):
     return cell_anchors
 
 
-def grid_anchors(grid_sizes, strides, cell_anchors):
+def set_grid_anchors(grid_sizes, strides, cell_anchors):
     """put cell anchor to fpn feature map correspondingly"""
     anchors = []
     assert cell_anchors is not None

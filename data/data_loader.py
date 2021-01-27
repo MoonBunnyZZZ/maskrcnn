@@ -1,7 +1,8 @@
+import cv2
 import numpy as np
 
 from utils import box_ops
-from utils.anchor import set_cell_anchors, grid_anchors
+from utils.anchor import set_cell_anchors, set_grid_anchors
 from data.dataset import Dataset
 
 
@@ -127,28 +128,107 @@ def rpn_target(anchor, gt_box):
     return flags, regression_targets
 
 
+def transform_matrix(w, h,
+                     zoom_ratio=(0.8, 1.2),
+                     shift_ratio=(-0.2, 0.2),
+                     rotation_degree=(-20, 20)):
+    t1 = np.array([[1, 0, -w // 2], [0, 1, -h // 2], [0, 0, 1]])
+    t2 = np.array([[1, 0, w // 2], [0, 1, h // 2], [0, 0, 1]])
+
+    zx, zy = np.random.uniform(zoom_ratio[0], zoom_ratio[1], 2)
+    zoom_matrix = np.array([[zx, 0, 0], [0, zy, 0], [0, 0, 1]])
+
+    # shear = np.random.uniform(-0.2, 0.2)
+    # shear_martrix = np.array([[1, -np.sin(shear), 0], [0, np.cos(shear), 0], [0, 0, 1]])
+
+    tx, ty = np.random.uniform(-shift_ratio[0], shift_ratio[1], 2)
+    shift_matrix = np.array([[1, 0, tx * w], [0, 1, ty * h], [0, 0, 1]])
+
+    theta = np.pi / 180 * np.random.uniform(rotation_degree[0], rotation_degree[1])
+    rotation_matrix = np.array([[np.cos(theta), -np.sin(theta), 0], [np.sin(theta), np.cos(theta), 0], [0, 0, 1]])
+
+    m = np.matmul(zoom_matrix, shift_matrix)
+    m = np.matmul(rotation_matrix, m)
+
+    m = (np.matmul(t2, np.matmul(m, t1)))
+    return m[0:2, 0:3]
+
+
+def augment_data(image, mask):
+    h, w = image.shape
+    m = transform_matrix(w, h)
+    image = cv2.warpAffine(image, m, (w, h))
+    mask = cv2.warpAffine(mask, m, (w, h))
+    if np.random.rand(1)[0]:
+        image = cv2.flip(image, 1)
+        mask = cv2.flip(mask, 1)
+    return image, mask
+
+
+def cal_bbox_from_mask(mask):
+    """calculate lt rb"""
+    matrix = mask > 0
+    y, x = np.nonzero(matrix)
+    y1 = np.min(y)
+    x1 = np.min(x)
+    y2 = np.max(y)
+    x2 = np.max(x)
+    return np.array([[x1, y1, x2, y2]])
+
+
 def data_generator(h5_path,
                    sizes, aspect_ratios,
-                   grid_sizes, strides, batch_size):
+                   grid_sizes, strides, batch_size,
+                   positive_sample_ratio, num_anchors_sample):
     brats = Dataset(h5_path)
     cell_anchors = set_cell_anchors(sizes, aspect_ratios)
-    anchors = grid_anchors(grid_sizes, strides, cell_anchors)
+    anchors = set_grid_anchors(grid_sizes, strides, cell_anchors)
 
     item_idx = 0
     batch_images, batch_flags, batch_regs = list(), list(), list()
+    batch_pos_sample_idx, batch_neg_sample_idx = list(), list()
     while True:
-        images, gt_masks, gt_boxes, gt_classes = brats.load(item_idx)
-        flags, rpn_regs = rpn_target(anchors, gt_boxes)
+        image, gt_mask, gt_cls = brats.load(item_idx)
+        image, gt_mask = augment_data(image, gt_mask)
+        gt_box = cal_bbox_from_mask(gt_mask)
 
+        flag, rpn_reg = rpn_target(anchors, gt_box)
+        pos_idx, neg_idx = balanced_sample(flag, positive_sample_ratio, num_anchors_sample)
 
-        batch_images.append(images)
-        batch_flags.append(flags)
-        batch_regs.append(rpn_regs)
+        batch_images.append(image)
+        batch_flags.append(flag)
+        batch_regs.append(rpn_reg)
+        batch_pos_sample_idx.append(pos_idx)
+        batch_neg_sample_idx.append(neg_idx)
 
         if (item_idx + 1) % batch_size == 0:
             # yield np.array(batch_images), np.array(batch_flags), np.array(batch_regs)
             batch_images.clear(), batch_flags.clear(), batch_regs.clear()
         if item_idx > len(brats):
+            item_idx = 0
+
+
+def dummy_generator():
+    item_idx = 0
+    batch_images, batch_flags, batch_regs = list(), list(), list()
+    batch_pos_sample_idx, batch_neg_sample_idx = list(), list()
+    while True:
+        batch_images.append(np.random.rand(448, 448, 3))
+        batch_flags.append(np.random.randint(0, 2, (12495, 1)).astype(np.float64))
+        batch_regs.append(np.random.rand(12495, 4))
+        batch_pos_sample_idx.append(np.random.randint(0, 2, (12495, 1)).astype(np.float64))
+        batch_neg_sample_idx.append(np.random.randint(0, 2, (12495, 1)).astype(np.float64))
+
+        if (item_idx + 1) % 1 == 0:
+            inputs = {"image": np.array(batch_images),
+                      "rpn_cls_gt": np.array(batch_flags),
+                      "rpn_reg_gt": np.array(batch_regs),
+                      "rpn_pos_sample_idx": np.array(batch_pos_sample_idx),
+                      "rpn_sample_idx": np.array(batch_neg_sample_idx)}
+            targets = {}
+            yield inputs, targets
+            batch_images.clear(), batch_flags.clear(), batch_regs.clear()
+            batch_pos_sample_idx.clear(), batch_neg_sample_idx.clear()
             item_idx = 0
 
 
