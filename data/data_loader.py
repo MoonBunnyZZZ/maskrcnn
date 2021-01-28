@@ -90,7 +90,6 @@ def balanced_sample(flags, ratio, num_anchors_sample):
     positive = np.nonzero(flags >= 1)[0]
     negative = np.nonzero(flags == 0)[0]
 
-    np.random.permutation()
     num_pos = int(num_anchors_sample * ratio)
     # protect against not enough positive examples
     num_pos = min(positive.size(), num_pos)

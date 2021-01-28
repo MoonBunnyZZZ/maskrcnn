@@ -111,7 +111,7 @@ def box_area():
 
 
 def box_iou():
-    boxes1 = tf.constant(rand(2, 5, 4)) # gt
+    boxes1 = tf.constant(rand(2, 5, 4))  # gt
     boxes2 = tf.constant(rand(2, 3, 4))
     # print(boxes1)
     b1 = tf.reshape(tf.tile(tf.expand_dims(boxes1, 2),
@@ -162,5 +162,51 @@ def match_proposal(low_threshold=0.3, high_threshold=0.7):
     return matches
 
 
+def batch_slice(inputs, graph_fn, batch_size, names=None):
+    """Splits inputs into slices and feeds each slice to a copy of the given
+    computation graph and then combines the results. It allows you to run a
+    graph on a batch of inputs even if the graph is written to support one
+    instance only.
+
+    inputs: list of tensors. All must have the same first dimension length
+    graph_fn: A function that returns a TF tensor that's part of a graph.
+    batch_size: number of slices to divide the data into.
+    names: If provided, assigns names to the resulting tensors.
+    """
+    if not isinstance(inputs, list):
+        inputs = [inputs]
+
+    outputs = []
+    for i in range(batch_size):
+        inputs_slice = [x[i] for x in inputs]
+        output_slice = graph_fn(*inputs_slice)
+        if not isinstance(output_slice, (tuple, list)):
+            output_slice = [output_slice]
+        outputs.append(output_slice)
+    # Change outputs from a list of slices where each is
+    # a list of outputs to a list of outputs and each has
+    # a list of slices
+    outputs = list(zip(*outputs))
+
+    if names is None:
+        names = [None] * len(outputs)
+
+    result = [tf.stack(o, axis=0, name=n)
+              for o, n in zip(outputs, names)]
+    if len(result) == 1:
+        result = result[0]
+
+    return result
+
+
 if __name__ == '__main__':
-    match_proposal()
+    roi_level = tf.constant(np.random.randint(0, 100, (5,)))
+    print(roi_level)
+    equal = tf.equal(roi_level, 2)
+    print(equal)
+    where = tf.where(equal)
+    print('where', where)
+    print(tf.gather_nd(roi_level, where))
+    roi = tf.random.shuffle(roi_level)
+    print(roi)
+    print(tf.slice(roi, [0], [2]))
