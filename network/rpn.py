@@ -1,34 +1,8 @@
-from tensorflow.keras.layers import Layer, Conv2D, ReLU
 import tensorflow as tf
+from tensorflow.keras.layers import Conv2D
 
-from utils.box_ops import nms, remove_tiny, clip_box, reg_to_box
-
-
-class RPN(Layer):
-    def __init__(self, in_channels, num_anchors):
-        super(RPN, self).__init__()
-        self.conv = Conv2D(in_channels, 3, 1, 'same', activation='relu', name='rpn_conv')
-        self.cls = Conv2D(num_anchors, 1, 1, 'same', name='rpn_cls_conv')
-        self.reg = Conv2D(num_anchors * 4, 1, 1, 'same', name='rpn_reg_conv')
-
-    def call(self, x):
-        cls, reg = list(), list()
-        p3, p4, p5, p6 = x
-
-        for feature in x:
-            t = self.conv(feature)
-
-            cls_output = self.cls(t)
-            _, h, w, c = cls_output.shape
-            cls.append(tf.reshape(cls, [-1, h * w, c]))
-
-            reg_output = self.reg(t)
-            _, h, w, c = reg_output.shape
-            reg.append(tf.reshape(reg, [-1, h * w, c]))
-
-        cls = tf.concat(cls, axis=0)
-        reg = tf.concat(reg, axis=0)
-        return [cls, reg]
+from utils import box_utils
+from core import nms
 
 
 def rpn(x, in_channels, num_anchors):
@@ -37,81 +11,98 @@ def rpn(x, in_channels, num_anchors):
     cls_conv = Conv2D(num_anchors, 1, 1, 'same', activation='sigmoid', name='rpn_cls_conv')
     reg_conv = Conv2D(num_anchors * 4, 1, 1, 'same', name='rpn_reg_conv')
 
-    m3 = conv(p3)
-    y3_cls = cls_conv(m3)
-    y3_reg = reg_conv(m3)
-    m4 = conv(p4)
-    y4_cls = cls_conv(m4)
-    y4_reg = reg_conv(m4)
-    m5 = conv(p5)
-    y5_cls = cls_conv(m5)
-    y5_reg = reg_conv(m5)
-    m6 = conv(p6)
-    y6_cls = cls_conv(m6)
-    y6_reg = reg_conv(m6)
+    cls_out = dict()
+    reg_out = dict()
+    for i, feature in enumerate([p3, p4, p5, p6]):
+        m = conv(feature)
+        y_cls = cls_conv(m)
+        y_reg = reg_conv(m)
+        cls_out[i + 3] = y_cls
+        reg_out[i + 3] = y_reg
 
-    n, h, w, c = m3.shape
-    # print(tf.shape(m3).numpy())
-    print(n, h, w, c)
-    y3_cls = tf.reshape(y3_cls, [-1, h * w * num_anchors, 1], name='y3_cls_reshape')
-    y3_reg = tf.reshape(y3_reg, [-1, h * w * num_anchors, 4], name='y3_reg_reshape')
-
-    n, h, w, c = m4.shape
-    y4_cls = tf.reshape(y4_cls, [-1, h * w * num_anchors, 1], name='y4_cls_reshape')
-    y4_reg = tf.reshape(y4_reg, [-1, h * w * num_anchors, 4], name='y4_reg_reshape')
-
-    n, h, w, c = m5.shape
-    y5_cls = tf.reshape(y5_cls, [-1, h * w * num_anchors, 1], name='y5_cls_reshape')
-    y5_reg = tf.reshape(y5_reg, [-1, h * w * num_anchors, 4], name='y5_reg_reshape')
-
-    n, h, w, c = m6.shape
-    y6_cls = tf.reshape(y6_cls, [-1, h * w * num_anchors, 1], name='y6_cls_reshape')
-    y6_reg = tf.reshape(y6_reg, [-1, h * w * num_anchors, 4], name='y6_reg_reshape')
-
-    rpn_cls = tf.concat([y3_cls, y4_cls, y5_cls, y6_cls], axis=1, name='rpn_cls_concat')
-    rpn_reg = tf.concat([y3_reg, y4_reg, y5_reg, y6_reg], axis=1, name='rpn_reg_concat')
-    return [rpn_cls, rpn_reg]
+    return [cls_out, reg_out]
 
 
-def generate_proposal(cls, reg, anchor, top_n, anchor_num_per_level, image_size, length_thre, iou_thre):
-    cls = tf.reshape(cls, [-1, sum(anchor_num_per_level)])
-    box = reg_to_box(reg, anchor)
-    l3_cls, l4_cls, l5_cls, l6_cls = tf.split(cls, anchor_num_per_level, axis=1)
-    _, y3_top_n_idx = tf.nn.top_k(l3_cls, top_n, name='level3_top_n')
-    _, y4_top_n_idx = tf.nn.top_k(l4_cls, top_n, name='level4_top_n')
-    _, y5_top_n_idx = tf.nn.top_k(l5_cls, top_n, name='level5_top_n')
-    # _, y6_top_n_idx = tf.nn.top_k(l6_cls, top_n, name='level6_top_n')
+def multilevel_propose_rois(rpn_boxes, rpn_scores, anchor_boxes, image_shape,
+                            rpn_pre_nms_top_k=2000,
+                            rpn_post_nms_top_k=1000,
+                            rpn_nms_threshold=0.7,
+                            rpn_score_threshold=0.0,
+                            rpn_min_size_threshold=0.0,
+                            decode_boxes=True,
+                            clip_boxes=True,
+                            use_batched_nms=False,
+                            apply_sigmoid_to_score=True):
+    rois = []
+    roi_scores = []
+    image_shape = tf.expand_dims(image_shape, axis=1)
+    for level in sorted(rpn_scores.keys()):
+        _, feature_h, feature_w, num_anchors_per_location = (
+            rpn_scores[level].get_shape().as_list())
+        num_boxes = feature_h * feature_w * num_anchors_per_location
+        this_level_scores = tf.reshape(rpn_scores[level], [-1, num_boxes])
+        this_level_boxes = tf.reshape(rpn_boxes[level], [-1, num_boxes, 4])
+        this_level_anchors = tf.cast(
+            tf.reshape(anchor_boxes[level], [-1, num_boxes, 4]),
+            dtype=this_level_scores.dtype)
 
-    # top n
-    l3_box, l4_box, l5_box, l6_box = tf.split(box, anchor_num_per_level, axis=1)
-    l3_proposal = tf.gather(l3_box, y3_top_n_idx, axis=1, batch_dims=-1)
-    l4_proposal = tf.gather(l4_box, y4_top_n_idx, axis=1, batch_dims=-1)
-    l5_proposal = tf.gather(l5_box, y5_top_n_idx, axis=1, batch_dims=-1)
+        if apply_sigmoid_to_score:
+            this_level_scores = tf.sigmoid(this_level_scores)
 
-    l3_cls = tf.gather(l3_cls, y3_top_n_idx, axis=1, batch_dims=-1)
-    l4_cls = tf.gather(l4_cls, y4_top_n_idx, axis=1, batch_dims=-1)
-    l5_cls = tf.gather(l5_cls, y5_top_n_idx, axis=1, batch_dims=-1)
+        if decode_boxes:
+            this_level_boxes = box_utils.decode_boxes(this_level_boxes,
+                                                      this_level_anchors)
+        if clip_boxes:
+            this_level_boxes = box_utils.clip_boxes(this_level_boxes, image_shape)
 
-    # clip proposal
-    h, w = image_size
-    l3_proposal = clip_box(l3_proposal, h, w, 'l3')
-    l4_proposal = clip_box(l4_proposal, h, w, 'l4')
-    l5_proposal = clip_box(l5_proposal, h, w, 'l5')
-    l6_proposal = clip_box(l6_box, h, w, 'l6')
+        if rpn_min_size_threshold > 0.0:
+            this_level_boxes, this_level_scores = box_utils.filter_boxes(
+                this_level_boxes, this_level_scores, image_shape,
+                rpn_min_size_threshold)
 
-    # remove tiny proposal
-    l3_proposal, l3_cls = remove_tiny(l3_proposal, l3_cls, length_thre)
-    l4_proposal, l4_cls = remove_tiny(l4_proposal, l4_cls, length_thre)
-    l5_proposal, l5_cls = remove_tiny(l5_proposal, l5_cls, length_thre)
-    l6_proposal, l6_cls = remove_tiny(l6_proposal, l6_cls, length_thre)
+        this_level_pre_nms_top_k = min(num_boxes, rpn_pre_nms_top_k)
+        this_level_post_nms_top_k = min(num_boxes, rpn_post_nms_top_k)
+        if rpn_nms_threshold > 0.0:
+            if use_batched_nms:
+                this_level_rois, this_level_roi_scores, _, _ = (
+                    tf.image.combined_non_max_suppression(
+                        tf.expand_dims(this_level_boxes, axis=2),
+                        tf.expand_dims(this_level_scores, axis=-1),
+                        max_output_size_per_class=this_level_pre_nms_top_k,
+                        max_total_size=this_level_post_nms_top_k,
+                        iou_threshold=rpn_nms_threshold,
+                        score_threshold=rpn_score_threshold,
+                        pad_per_class=False,
+                        clip_boxes=False))
+            else:
+                if rpn_score_threshold > 0.0:
+                    this_level_boxes, this_level_scores = (
+                        box_utils.filter_boxes_by_scores(this_level_boxes,
+                                                         this_level_scores,
+                                                         rpn_score_threshold))
+                this_level_boxes, this_level_scores = box_utils.top_k_boxes(
+                    this_level_boxes, this_level_scores, k=this_level_pre_nms_top_k)
+                this_level_roi_scores, this_level_rois = (
+                    nms.sorted_non_max_suppression_padded(
+                        this_level_scores,
+                        this_level_boxes,
+                        max_output_size=this_level_post_nms_top_k,
+                        iou_threshold=rpn_nms_threshold))
+        else:
+            this_level_rois, this_level_roi_scores = box_utils.top_k_boxes(
+                this_level_rois, this_level_scores, k=this_level_post_nms_top_k)
 
-    # nms
-    proposal = tf.concat([l3_proposal, l4_proposal, l5_proposal, l6_proposal], axis=1)
-    cls = tf.concat([l3_cls, l4_cls, l5_cls, l6_cls], axis=1)
-    proposal = nms(proposal, cls, top_n, iou_thre)
-    # proposal = tf.expand_dims(proposal, -1)
-    # proposal = tf.image.crop_and_resize(proposal,
-    #                                     tf.constant([[0.2, 0.3, 0.4, 0.5]]),
-    #                                     tf.constant([0]),
-    #                                     tf.constant([2, 2]))
-    return proposal
+        rois.append(this_level_rois)
+        roi_scores.append(this_level_roi_scores)
+
+    all_rois = tf.concat(rois, axis=1)
+    all_roi_scores = tf.concat(roi_scores, axis=1)
+
+    with tf.name_scope('top_k_rois'):
+        _, num_valid_rois = all_roi_scores.get_shape().as_list()
+        overall_top_k = min(num_valid_rois, rpn_post_nms_top_k)
+
+        selected_rois, selected_roi_scores = box_utils.top_k_boxes(
+            all_rois, all_roi_scores, k=overall_top_k)
+
+    return selected_rois, selected_roi_scores

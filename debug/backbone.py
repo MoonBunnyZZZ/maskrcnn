@@ -54,4 +54,28 @@ def resnet(img_input):
 
     c3, c4, c5 = stack_fn(x)
 
-    return [c3, c4, c5]
+    return c3, c4, c5
+
+
+def fpn(c3, c4, c5):
+    p3_output = keras.layers.Conv2D(256, 1, 1, "same", name="c3_conv_1x1")(c3)
+    p4_output = keras.layers.Conv2D(256, 1, 1, "same", name="c4_conv_1x1")(c4)
+    p5_output = keras.layers.Conv2D(256, 1, 1, "same", name="c5_conv_1x1")(c5)
+    p4_output = p4_output + keras.layers.UpSampling2D(2)(p5_output)
+    p3_output = p3_output + keras.layers.UpSampling2D(2)(p4_output)
+    p3_output = keras.layers.Conv2D(256, 3, 1, "same", name="p3_conv_3x3")(p3_output)
+    p4_output = keras.layers.Conv2D(256, 3, 1, "same", name="p4_conv_3x3")(p4_output)
+    p5_output = keras.layers.Conv2D(256, 3, 1, "same", name="p5_conv_3x3")(p5_output)
+    p6_output = keras.layers.MaxPool2D((1, 1), 2, name="p6_maxpool")(p5_output)
+    return p3_output, p4_output, p5_output, p6_output
+
+
+if __name__ == '__main__':
+    # inputs = keras.layers.Input(shape=(224, 224, 3))
+    # y3, y4, y5 = resnet(inputs)
+    # p3, p4, p5, p6 = fpn(y3, y4, y5)
+    # model = keras.Model(inputs=inputs, outputs=[p3, p4, p5, p6])
+    # model.summary()
+    # print(model.outputs)
+    # print(model.output)
+    pass

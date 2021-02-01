@@ -1,94 +1,51 @@
-import numpy as np
 import tensorflow as tf
-from tensorflow import keras
 
-from network.rpn import rpn, generate_proposal
-from network.backbone import resnet, fpn
-from utils.roi import select_train_sample
-from loss.rpn import RPNClsLoss, RPNRegLoss, RPNLoss
-from data.data_loader import data_generator, dummy_generator
+from core.anchor import Anchor
+from core.spatial_transform_ops import multilevel_crop_and_resize
+from network.backbone import resnet
+from network.fpn import fpn
+from network.rpn import rpn, multilevel_propose_rois
+from network.roi import assign_and_sample_proposals
+import keras_utils
+from utils import box_utils
 
-# tf.config.gpu.set_per_process_memory_fraction(0.75)
-# tf.config.gpu.set_per_process_memory_growth(True)
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-    except RuntimeError as e:
-        # Memory growth must be set before GPUs have been initialized
-        print(e)
+with keras_utils.maybe_enter_backend_graph():
+    batch_size = 2
+    input_layer = {
+        'image': tf.keras.layers.Input(shape=(1024, 1024, 3), batch_size=batch_size, name='image', dtype=tf.float32),
+        'image_info': tf.keras.layers.Input(shape=[4, 2], batch_size=batch_size, name='image_info'),
+        'gt_boxes': tf.keras.layers.Input(shape=[100, 4], batch_size=batch_size, name='gt_boxes'),
+        'gt_classes': tf.keras.layers.Input(shape=[100], batch_size=batch_size, name='gt_classes', dtype=tf.int64)}
 
+    model_outputs = {}
 
-def get_fake_dataset():
-    def map_f(img, rpn_cls_gt, rpn_reg_gt, rpn_pos_sample_idx, rpn_neg_sample_idx):
-        inputs = {"image": img,
-                  "rpn_cls_gt": rpn_cls_gt,
-                  "rpn_reg_gt": rpn_reg_gt,
-                  "rpn_pos_sample_idx": rpn_pos_sample_idx,
-                  "rpn_sample_idx": rpn_neg_sample_idx}
-        targets = {}
-        return inputs, targets
+    image = input_layer['image']
+    # _, image_height, image_width, _ = image.get_shape().as_list()
 
-    fake_imgs = np.ones([10, 448, 448, 3])
-    fake_cls = np.ones([10, 12495, 1])
-    fake_reg = np.ones([10, 12495, 4])
-    fake_pos_idx = np.ones([10, 12495, 1])
-    fake_idx = np.ones([10, 12495, 1])
+    backbone_features = resnet(image)
+    fpn_features = fpn(backbone_features)
+    rpn_features = rpn(fpn_features, 256, 3)
+    input_anchor = Anchor(3, 6, 1, [1.0, 2.0, 0.5], 8, (1024, 1024))
+    selected_rois, selected_roi_scores = multilevel_propose_rois(rpn_features[1], rpn_features[0],
+                                                                 input_anchor.multilevel_boxes,
+                                                                 input_layer['image_info'][:, 1, :],
+                                                                 use_batched_nms=False)
+    selected_rois = tf.stop_gradient(selected_rois)
 
-    fake_dataset = tf.data.Dataset.from_tensor_slices(
-        (fake_imgs, fake_cls, fake_reg, fake_pos_idx, fake_idx)
-    ).map(map_f).batch(1)
-    return fake_dataset
+    rpn_rois, matched_gt_boxes, matched_gt_classes, matched_gt_indices = (
+        assign_and_sample_proposals(selected_rois, input_layer['gt_boxes'], input_layer['gt_classes']))
 
+    box_targets = box_utils.encode_boxes(
+        matched_gt_boxes, rpn_rois, weights=[10.0, 10.0, 5.0, 5.0])
+    # If the target is background, the box target is set to all 0s.
+    box_targets = tf.where(tf.tile(tf.expand_dims(tf.equal(matched_gt_classes, 0), axis=-1),
+                                   [1, 1, 4]), tf.zeros_like(box_targets), box_targets)
+    roi_features = multilevel_crop_and_resize(fpn_features, rpn_rois, output_size=7)
 
-def maskrcnn():
-    inputs = keras.layers.Input(shape=(448, 448, 3), name='image')
-    # input_rpn_cls = keras.layers.Input([12495, 1], name='rpn_cls_gt')
-    # input_rpn_reg = keras.layers.Input([12495, 4], name='rpn_reg_gt')
-    # input_rpn_pos_sample_idx = keras.layers.Input([12495, 1], name='rpn_pos_sample_idx')
-    # input_rpn_sample_idx = keras.layers.Input([12495, 1], name='rpn_sample_idx')
-    input_grid_anchor = keras.layers.Input([12495, 4], name='grid_anchor')
-    input_roi_gt_reg = keras.layers.Input([2000, 4], name='roi_gt_reg')
-    input_roi_gt_cls = keras.layers.Input([2000, 1], name='roi_gt_cls')
-
-    y3, y4, y5 = resnet(inputs)
-    p3, p4, p5, p6 = fpn(y3, y4, y5)
-    cls, reg = rpn([p3, p4, p5, p6], 256, 3)
-    # rpn_cls_loss = RPNClsLoss()([input_rpn_cls, cls, input_rpn_sample_idx])
-    # rpn_reg_loss = RPNRegLoss()([input_rpn_reg, reg, input_rpn_pos_sample_idx])
-
-    # cls_loss, reg_loss = RPNLoss()(
-    #     [input_rpn_cls, cls, input_rpn_reg, reg, input_rpn_sample_idx, input_rpn_pos_sample_idx])
-    proposal_box = generate_proposal(cls, reg, input_grid_anchor,
-                                     200, [3 * 56 * 56, 3 * 28 * 28, 3 * 14 * 14, 3 * 7 * 7],
-                                     (448, 448), 0.01, 0.7)
-    # print(proposal_box)
-    matched_idxs, flags = select_train_sample(input_roi_gt_reg, proposal_box, input_roi_gt_cls)
-    # model = keras.Model(inputs=[inputs, input_rpn_cls, input_rpn_reg,
-    #                             input_rpn_pos_sample_idx, input_rpn_sample_idx,
-    #                             input_grid_anchor],
-    #                     outputs=[cls, reg, cls_loss, reg_loss, proposal_box])
-    model = keras.Model(inputs=[inputs, input_grid_anchor, input_roi_gt_reg, input_roi_gt_cls],
-                        outputs=[matched_idxs, flags])
-    return model
-
-
-m = maskrcnn()
-
-m.summary(line_length=170)
-# for i in range(len(m.layers)):
-#     print(m.get_layer(index=i).output)
-# keras.utils.plot_model(m, to_file='model.png')
-
-# dummy_data = tf.data.Dataset.from_generator(dummy_generator,
-#                                             (tf.float64, tf.float64, tf.float64, tf.float64, tf.float64))
-# dataset = dummy_data.map(map_fn)
-# dataset = dummy_data.batch(batch_size=10)
-# dataset = dummy_data.repeat(count=2)
-# for batch, (x, y, z, c, v) in enumerate(dataset):
-#     print(batch)
-# m.compile(optimizer="adam")
-# m.fit(dummy_generator(), epochs=2, steps_per_epoch=10)
+    print(roi_features)
+# model_outputs.update({'rpn_score_outputs': tf.nest.map_structure(lambda x: tf.cast(x, tf.float32),
+#                                                                  rpn_features[0]),
+#                       'rpn_box_outputs': tf.nest.map_structure(lambda x: tf.cast(x, tf.float32),
+#                                                                rpn_features[1])})
+# m = tf.keras.Model(inputs=input_layer, outputs=model_outputs)
+# m.summary()

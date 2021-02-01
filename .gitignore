@@ -1,2 +1,3 @@
 .idea/
 ./brats17.hdf5
+__pycache__/

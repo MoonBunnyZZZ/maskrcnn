@@ -52,11 +52,10 @@ def match_proposal(match_quality_matrix, low_threshold=0.3, high_threshold=0.7):
 
 
 def encode_flag_and_match_box(gt_box, proposal, gt_label):
-    """ encode grid anchors with 1,0,-1 and match gt box to each proposal
+    """ encode grid anchors with 1,2,3...N,0,-1 and match gt box to each proposal
         gt_box shape:[batch_size, gt_num, 4]
         gt_label shape:[batch_size, gt_num, 1]
         proposal shape:[batch_size, proposal_num, 4]
-
         return
         clipped_matched_idxs shape:[batch_size, proposal_num]
         flags shape:[batch_size, proposal_num]
@@ -68,30 +67,29 @@ def encode_flag_and_match_box(gt_box, proposal, gt_label):
     # else:
     match_quality_matrix = box_iou(gt_box, proposal)
     matched_idxs = match_proposal(match_quality_matrix)  # shape:[batch_size, proposal_num]
-
+    # print(matched_idxs)
     # clipped_matched_idxs shape [batch_size, proposal_num]
     clipped_matched_idxs = tf.clip_by_value(matched_idxs, 0, 1000)
     flags = tf.gather(gt_label, clipped_matched_idxs, batch_dims=1)
     flags = tf.squeeze(flags, -1)
-    flags = tf.cast(flags, tf.int64)
+    flags = tf.cast(flags, tf.float64)
 
     bg_idx = tf.where(tf.equal(matched_idxs, -1))
-    bg_update = tf.tile(tf.constant(np.array([0], dtype=np.int64)),
+    bg_update = tf.tile(tf.constant(np.array([0], dtype=np.float64)),
                         [tf.shape(bg_idx)[0]])
     flags = tf.tensor_scatter_nd_update(flags, bg_idx, bg_update)
 
     idx_to_discard = tf.where(tf.equal(matched_idxs, -2))
-    discard_update = tf.tile(tf.constant(np.array([-1], dtype=np.int64)),
+    discard_update = tf.tile(tf.constant(np.array([-1], dtype=np.float64)),
                              [tf.shape(idx_to_discard)[0]])
     flags = tf.tensor_scatter_nd_update(flags, idx_to_discard, discard_update)
-    print(clipped_matched_idxs.shape)
-    print(flags.shape)
+    # print(clipped_matched_idxs.shape)
+    # print(flags.shape)
     return clipped_matched_idxs, flags
 
 
 def cal_reg_target(gt_box, proposal, weights=(1.0, 1.0, 1.0, 1.0)):
     """
-
     :param gt_box: shape [N, 4]
     :param proposal: shape [N, 4]
     :param weights:
@@ -122,99 +120,72 @@ def cal_reg_target(gt_box, proposal, weights=(1.0, 1.0, 1.0, 1.0)):
     return targets
 
 
-def balanced_sample(flags, proposal, gt_box):
+def balanced_sample(flags):
     """
-
-    :param flags:
-    :param proposal:
-    :param gt_box:
-    :param ratio:
-    :param num_anchors_sample:
+    :param flags: shape [batch_size, N, 1]
+    :param proposal: shape [batch_size, N, 4]
+    :param gt_box: shape [batch_size, N, 4]
     :return:
     """
-    positive = tf.where(tf.greater_equal(flags, 0))
-    negative = tf.where(tf.equal(flags, 0))
-    print('tf.shape(positive)', tf.shape(positive))
-    positive = tf.squeeze(positive, -1)
-    negative = tf.squeeze(negative, -1)
-    print('tf.shape(positive)', tf.shape(positive))
+    print('flags shape' ,flags.shape)
+    selected_sample = []
+    batch_size, num_proposal = flags.get_shape().as_list()
+    for i in range(batch_size):
+        positive = tf.where(tf.greater_equal(flags[i], 0.1))
+        negative = tf.where(tf.greater_equal(flags[i], 0))
+        positive = tf.squeeze(positive, -1)
+        negative = tf.squeeze(negative, -1)
 
-    num_pos = 256
-    # protect against not enough positive examples
-    num_pos = tf.minimum(tf.size(positive), num_pos)
-    num_neg = 512 - num_pos
-    # protect against not enough negative examples
-    num_neg = tf.minimum(tf.size(negative), num_neg)
+        num_pos = 256
+        # protect against not enough positive examples
+        num_pos = tf.minimum(tf.size(positive), num_pos)
+        num_neg = 512 - num_pos
+        # protect against not enough negative examples
+        num_neg = tf.minimum(tf.size(negative), num_neg)
 
-    # randomly select positive and negative examples
-    print(num_pos)
-    pos_idx_per_image = tf.slice(tf.random.shuffle(positive), [0], [num_pos])
-    neg_idx_per_image = tf.slice(tf.random.shuffle(negative), [0], [num_neg])
+        # randomly select positive and negative examples
+        pos_idx_per_image = tf.slice(tf.random.shuffle(positive), [0], [num_pos])
+        neg_idx_per_image = tf.slice(tf.random.shuffle(negative), [0], [num_neg])
 
-    idx_per_image = tf.concat([pos_idx_per_image, neg_idx_per_image], axis=-1)
-    labels_sampled = tf.gather(flags, idx_per_image)
+        idx_per_image = tf.concat([pos_idx_per_image, neg_idx_per_image], axis=-1)
+        idx_per_image_mask = tf.scatter_nd(tf.expand_dims(idx_per_image, -1),
+                                           tf.ones([num_pos + num_neg]),
+                                           tf.constant([num_proposal], dtype=tf.int64))
+        selected_sample.append(idx_per_image_mask)
+    select_sample_idx = tf.stack(selected_sample, axis=0)
+    # _, sampled_indices = tf.nn.top_k(tf.cast(select_sample_idx, dtype=tf.int32), k=4, sorted=True)
+    # sampled_indices_shape = tf.shape(sampled_indices)
+    # batch_indices = (tf.expand_dims(tf.range(sampled_indices_shape[0]), axis=-1) *
+    #                  tf.ones([1, sampled_indices_shape[-1]], dtype=tf.int32))
+    # gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
+    return select_sample_idx
 
-    proposal_sampled = tf.gather(proposal, idx_per_image)
-    gt_box_sampled = tf.gather(gt_box, idx_per_image)
-    reg_target_sampled = cal_reg_target(gt_box_sampled, proposal_sampled)
 
-    return labels_sampled, reg_target_sampled
-
-
-def batch_slice(inputs, graph_fn, batch_size, names=None):
-    """Splits inputs into slices and feeds each slice to a copy of the given
-    computation graph and then combines the results. It allows you to run a
-    graph on a batch of inputs even if the graph is written to support one
-    instance only.
-
-    inputs: list of tensors. All must have the same first dimension length
-    graph_fn: A function that returns a TF tensor that's part of a graph.
-    batch_size: number of slices to divide the data into.
-    names: If provided, assigns names to the resulting tensors.
+def select_train_sample(gt_box, proposal, gt_label, batch_size=2):
     """
-    if not isinstance(inputs, list):
-        inputs = [inputs]
-
-    outputs = []
-    for i in range(2):
-        inputs_slice = [x[i] for x in inputs]
-        print('slice', inputs_slice)
-        output_slice = graph_fn(*inputs_slice)
-        if not isinstance(output_slice, (tuple, list)):
-            output_slice = [output_slice]
-        outputs.append(output_slice)
-    # Change outputs from a list of slices where each is
-    # a list of outputs to a list of outputs and each has
-    # a list of slices
-    outputs = list(zip(*outputs))
-
-    if names is None:
-        names = [None] * len(outputs)
-
-    result = [tf.stack(o, axis=0, name=n)
-              for o, n in zip(outputs, names)]
-    if len(result) == 1:
-        result = result[0]
-
-    return result
-
-
-def select_train_sample(gt_box, proposal, gt_label):
+    :param gt_box: shape [batch_size, N, 4]
+    :param proposal: shape [batch_size, M, 4]
+    :param gt_label: shape [batch_size, N, 1]
+    :return:
+    """
     matched_idxs, flags = encode_flag_and_match_box(gt_box, proposal, gt_label)
-    # out = Sample()([flags, proposal, gt_box])
-    return matched_idxs, flags
+    selected_sample_idxes = balanced_sample(flags)
+    sampled_proposal, sampled_gt_box, sampled_gt_label, sampled_gt_idx = list(), list(), list(), list()
 
+    for i in range(batch_size):
+        selected_sample_idx = selected_sample_idxes[i]
+        selected_sample_idx = tf.cast(selected_sample_idx, tf.int32)
 
-class Sample(tf.keras.layers.Layer):
-    def __init__(self):
-        super(Sample, self).__init__()
+        sampled_proposal.append(tf.gather(proposal[i], selected_sample_idx))
+        sampled_gt_box.append(tf.gather(gt_box[i], selected_sample_idx))
+        sampled_gt_label.append(tf.gather(gt_label[i], selected_sample_idx))
+        sampled_gt_idx.append(tf.gather(matched_idxs[i], selected_sample_idx))
 
-    def call(self, inputs):
-        flags, proposal, gt_box = inputs
-        out = batch_slice([flags, proposal, gt_box],
-                          lambda x, y, z: balanced_sample(x, y, z),
-                          2)
-        return out
+    sampled_proposal = tf.stack(sampled_proposal, axis=0).shape
+    sampled_gt_box = tf.stack(sampled_gt_box, axis=0)
+    sampled_gt_label = tf.stack(sampled_gt_label, axis=0)
+    sampled_gt_idx = tf.stack(sampled_gt_idx, axis=0)
+    return sampled_proposal, sampled_gt_box, sampled_gt_label, sampled_gt_idx
 
 
 # encode_flag_and_match_box  test
@@ -222,23 +193,37 @@ class Sample(tf.keras.layers.Layer):
 # boxes2 = tf.constant(np.random.rand(2, 5, 4))
 # boxes3 = tf.constant(np.random.rand(2, 3, 1))
 # encode_flag_and_match_box(boxes1, boxes2, boxes3)
-
+# select_train_sample(boxes1, boxes2, boxes3)
 # cal_reg_target  test
 # boxes1 = np.random.rand(3, 4)
 # boxes2 = np.random.rand(3, 4)
 # cal_reg_target(boxes1, boxes2)
 
 # balanced_sample test
-# boxes1 = tf.constant(np.random.rand(2000, ))
+# boxes1 = tf.constant(np.random.rand(2, 1000, 1))
 # boxes2 = tf.constant(np.random.rand(2000, 4))
 # boxes3 = tf.constant(np.random.rand(3, 4))
-# balanced_sample(boxes1, boxes2, boxes3)
+# out = balanced_sample(boxes1)
+# _, sampled_indices = tf.nn.top_k(tf.cast(out, dtype=tf.int32),
+#                                  k=4,
+#                                  sorted=True)
+# sampled_indices_shape = tf.shape(sampled_indices)
+# batch_indices = (
+#         tf.expand_dims(tf.range(sampled_indices_shape[0]), axis=-1) *
+#         tf.ones([1, sampled_indices_shape[-1]], dtype=tf.int32))
+# gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
+#
+# print(gather_nd_indices)
 
-inputs1 = tf.keras.layers.Input(shape=(None, None), name='image')
-inputs2 = tf.keras.layers.Input(shape=(None, None), name='image')
-inputs3 = tf.keras.layers.Input(shape=(None, 4), name='image')
-
-s = Sample()
-res = s([inputs1, inputs2, inputs3])
-m = tf.keras.Model(inputs=[inputs1, inputs2, inputs3], outputs=res)
-m.summary()
+# boxes1 = tf.constant(np.random.rand(2, 10))
+# boxes2 = tf.constant(np.array([[[0, 2],
+#                                 [0, 2],
+#                                 [0, 4],
+#                                 [0, 4]],
+#                                [[1, 6],
+#                                 [1, 5],
+#                                 [1, 8],
+#                                 [1, 8]]]))
+# out = tf.gather_nd(boxes1, boxes2)
+# print(boxes1)
+# print(out)
