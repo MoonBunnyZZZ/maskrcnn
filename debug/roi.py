@@ -67,9 +67,11 @@ def encode_flag_and_match_box(gt_box, proposal, gt_label):
     # else:
     match_quality_matrix = box_iou(gt_box, proposal)
     matched_idxs = match_proposal(match_quality_matrix)  # shape:[batch_size, proposal_num]
-    # print(matched_idxs)
+
     # clipped_matched_idxs shape [batch_size, proposal_num]
     clipped_matched_idxs = tf.clip_by_value(matched_idxs, 0, 1000)
+    # print(matched_idxs.shape)
+    # print(gt_label.shape)
     flags = tf.gather(gt_label, clipped_matched_idxs, batch_dims=1)
     flags = tf.squeeze(flags, -1)
     flags = tf.cast(flags, tf.float64)
@@ -83,8 +85,6 @@ def encode_flag_and_match_box(gt_box, proposal, gt_label):
     discard_update = tf.tile(tf.constant(np.array([-1], dtype=np.float64)),
                              [tf.shape(idx_to_discard)[0]])
     flags = tf.tensor_scatter_nd_update(flags, idx_to_discard, discard_update)
-    # print(clipped_matched_idxs.shape)
-    # print(flags.shape)
     return clipped_matched_idxs, flags
 
 
@@ -127,12 +127,11 @@ def balanced_sample(flags):
     :param gt_box: shape [batch_size, N, 4]
     :return:
     """
-    print('flags shape' ,flags.shape)
     selected_sample = []
     batch_size, num_proposal = flags.get_shape().as_list()
     for i in range(batch_size):
-        positive = tf.where(tf.greater_equal(flags[i], 0.1))
-        negative = tf.where(tf.greater_equal(flags[i], 0))
+        positive = tf.where(tf.greater_equal(flags[i], 1))
+        negative = tf.where(tf.equal(flags[i], 0))
         positive = tf.squeeze(positive, -1)
         negative = tf.squeeze(negative, -1)
 
@@ -161,37 +160,45 @@ def balanced_sample(flags):
     return select_sample_idx
 
 
-def select_train_sample(gt_box, proposal, gt_label, batch_size=2):
+def select_train_sample(gt_box, proposal, gt_label):
     """
     :param gt_box: shape [batch_size, N, 4]
     :param proposal: shape [batch_size, M, 4]
     :param gt_label: shape [batch_size, N, 1]
     :return:
     """
-    matched_idxs, flags = encode_flag_and_match_box(gt_box, proposal, gt_label)
-    selected_sample_idxes = balanced_sample(flags)
-    sampled_proposal, sampled_gt_box, sampled_gt_label, sampled_gt_idx = list(), list(), list(), list()
+    # matched_idxs: index of gt box which matched to proposal
+    # flags: flag of proposal, fg,bg or discarded
+    matched_idxs, flags = encode_flag_and_match_box(gt_box, proposal, gt_label)  # [batch_size, M]
+    selected_sample_masks = balanced_sample(flags)  # [batch_size, M]
+    _, indices = tf.nn.top_k(selected_sample_masks, 512)
+    select_sample_idx = tf.gather(matched_idxs, indices, axis=1, batch_dims=-1)
 
-    for i in range(batch_size):
-        selected_sample_idx = selected_sample_idxes[i]
-        selected_sample_idx = tf.cast(selected_sample_idx, tf.int32)
-
-        sampled_proposal.append(tf.gather(proposal[i], selected_sample_idx))
-        sampled_gt_box.append(tf.gather(gt_box[i], selected_sample_idx))
-        sampled_gt_label.append(tf.gather(gt_label[i], selected_sample_idx))
-        sampled_gt_idx.append(tf.gather(matched_idxs[i], selected_sample_idx))
-
-    sampled_proposal = tf.stack(sampled_proposal, axis=0).shape
-    sampled_gt_box = tf.stack(sampled_gt_box, axis=0)
-    sampled_gt_label = tf.stack(sampled_gt_label, axis=0)
-    sampled_gt_idx = tf.stack(sampled_gt_idx, axis=0)
-    return sampled_proposal, sampled_gt_box, sampled_gt_label, sampled_gt_idx
+    sampled_proposal = tf.gather(proposal, select_sample_idx, axis=1, batch_dims=-1)
+    sampled_gt_box = tf.gather(gt_box, select_sample_idx, axis=1, batch_dims=-1)
+    sampled_gt_label = tf.gather(flags, select_sample_idx, axis=1, batch_dims=-1)
+    return sampled_proposal, sampled_gt_box, sampled_gt_label, select_sample_idx
 
 
 # encode_flag_and_match_box  test
-# boxes1 = tf.constant(np.random.rand(2, 3, 4))
-# boxes2 = tf.constant(np.random.rand(2, 5, 4))
-# boxes3 = tf.constant(np.random.rand(2, 3, 1))
+# import cv2
+#
+# img = np.random.randint(255, 256, (448, 448, 3)).astype(np.int8)
+# b2 = np.reshape(boxes2, (-1, 4)).tolist()
+# b1 = np.reshape(boxes1, (-1, 4)).tolist()
+# for x1, y1, x2, y2 in b2:
+#     img = cv2.line(img, (x1, y1), (x1, y2), (0, 0, 255))
+#     img = cv2.line(img, (x1, y2), (x2, y2), (0, 0, 255))
+#     img = cv2.line(img, (x2, y2), (x2, y1), (0, 0, 255))
+#     img = cv2.line(img, (x2, y1), (x1, y1), (0, 0, 255))
+#
+# for x1, y1, x2, y2 in b1:
+#     img = cv2.line(img, (x1, y1), (x1, y2), (0, 255, 0))
+#     img = cv2.line(img, (x1, y2), (x2, y2), (0, 255, 0))
+#     img = cv2.line(img, (x2, y2), (x2, y1), (0, 255, 0))
+#     img = cv2.line(img, (x2, y1), (x1, y1), (0, 255, 0))
+# cv2.imshow('dd', img)
+# cv2.waitKey(0)
 # encode_flag_and_match_box(boxes1, boxes2, boxes3)
 # select_train_sample(boxes1, boxes2, boxes3)
 # cal_reg_target  test
@@ -214,16 +221,3 @@ def select_train_sample(gt_box, proposal, gt_label, batch_size=2):
 # gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
 #
 # print(gather_nd_indices)
-
-# boxes1 = tf.constant(np.random.rand(2, 10))
-# boxes2 = tf.constant(np.array([[[0, 2],
-#                                 [0, 2],
-#                                 [0, 4],
-#                                 [0, 4]],
-#                                [[1, 6],
-#                                 [1, 5],
-#                                 [1, 8],
-#                                 [1, 8]]]))
-# out = tf.gather_nd(boxes1, boxes2)
-# print(boxes1)
-# print(out)

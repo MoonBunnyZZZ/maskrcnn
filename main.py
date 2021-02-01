@@ -35,8 +35,7 @@ with keras_utils.maybe_enter_backend_graph():
     rpn_rois, matched_gt_boxes, matched_gt_classes, matched_gt_indices = (
         assign_and_sample_proposals(selected_rois, input_layer['gt_boxes'], input_layer['gt_classes']))
 
-    box_targets = box_utils.encode_boxes(
-        matched_gt_boxes, rpn_rois, weights=[10.0, 10.0, 5.0, 5.0])
+    box_targets = box_utils.encode_boxes(matched_gt_boxes, rpn_rois, weights=[10.0, 10.0, 5.0, 5.0])
     # If the target is background, the box target is set to all 0s.
     box_targets = tf.where(tf.tile(tf.expand_dims(tf.equal(matched_gt_classes, 0), axis=-1),
                                    [1, 1, 4]), tf.zeros_like(box_targets), box_targets)

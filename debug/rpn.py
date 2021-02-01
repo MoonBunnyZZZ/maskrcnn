@@ -1,7 +1,7 @@
 from tensorflow.keras.layers import Conv2D
 import tensorflow as tf
 
-from debug.box_ops import nms, remove_tiny, clip_box, reg_to_box
+from debug.box_ops import clip_box, reg_to_box, top_k_boxes
 
 
 def rpn(x, in_channels, num_anchors):
@@ -10,90 +10,66 @@ def rpn(x, in_channels, num_anchors):
     cls_conv = Conv2D(num_anchors, 1, 1, 'same', activation='sigmoid', name='rpn_cls_conv')
     reg_conv = Conv2D(num_anchors * 4, 1, 1, 'same', name='rpn_reg_conv')
 
-    m3 = conv(p3)
-    y3_cls = cls_conv(m3)
-    y3_reg = reg_conv(m3)
-    m4 = conv(p4)
-    y4_cls = cls_conv(m4)
-    y4_reg = reg_conv(m4)
-    m5 = conv(p5)
-    y5_cls = cls_conv(m5)
-    y5_reg = reg_conv(m5)
-    m6 = conv(p6)
-    y6_cls = cls_conv(m6)
-    y6_reg = reg_conv(m6)
+    cls_out = list()
+    reg_out = list()
+    for feature in [p3, p4, p5, p6]:
+        m = conv(feature)
+        y_cls = cls_conv(m)
+        y_reg = reg_conv(m)
+        cls_out.append(y_cls)
+        reg_out.append(y_reg)
 
-    n, h, w, c = m3.shape
-    # print(tf.shape(m3).numpy())
-    print(n, h, w, c)
-    y3_cls = tf.reshape(y3_cls, [-1, h * w * num_anchors, 1], name='y3_cls_reshape')
-    y3_reg = tf.reshape(y3_reg, [-1, h * w * num_anchors, 4], name='y3_reg_reshape')
-
-    n, h, w, c = m4.shape
-    y4_cls = tf.reshape(y4_cls, [-1, h * w * num_anchors, 1], name='y4_cls_reshape')
-    y4_reg = tf.reshape(y4_reg, [-1, h * w * num_anchors, 4], name='y4_reg_reshape')
-
-    n, h, w, c = m5.shape
-    y5_cls = tf.reshape(y5_cls, [-1, h * w * num_anchors, 1], name='y5_cls_reshape')
-    y5_reg = tf.reshape(y5_reg, [-1, h * w * num_anchors, 4], name='y5_reg_reshape')
-
-    n, h, w, c = m6.shape
-    y6_cls = tf.reshape(y6_cls, [-1, h * w * num_anchors, 1], name='y6_cls_reshape')
-    y6_reg = tf.reshape(y6_reg, [-1, h * w * num_anchors, 4], name='y6_reg_reshape')
-
-    rpn_cls = tf.concat([y3_cls, y4_cls, y5_cls, y6_cls], axis=1, name='rpn_cls_concat')
-    rpn_reg = tf.concat([y3_reg, y4_reg, y5_reg, y6_reg], axis=1, name='rpn_reg_concat')
-    return [rpn_cls, rpn_reg]
+    return cls_out, reg_out
 
 
-def generate_proposal(cls, reg, anchor, top_n, anchor_num_per_level, image_size, length_thresh, iou_thresh):
-    # cls = tf.reshape(cls, [-1, sum(anchor_num_per_level)])
-    box = reg_to_box(reg, anchor)
-    print(cls.get_shape().as_list())
-    batch_size = cls.get_shape().as_list()[0]
-    proposals = list()
-    for i in range(batch_size):
-        l3_cls, l4_cls, l5_cls, l6_cls = tf.split(cls[i], anchor_num_per_level, axis=1)
+def generate_proposal(cls, reg, anchor, pre_nms_top_k, post_nms_top_k, image_size, iou_thresh, length_thresh):
+    """
 
-        _, y3_top_n_idx = tf.nn.top_k(l3_cls, top_n, name='level3_top_n')
-        _, y4_top_n_idx = tf.nn.top_k(l4_cls, top_n, name='level4_top_n')
-        _, y5_top_n_idx = tf.nn.top_k(l5_cls, top_n, name='level5_top_n')
-        # _, y6_top_n_idx = tf.nn.top_k(l6_cls, top_n, name='level6_top_n')
+    :param cls: list, len(cls) is fpn level num, each in cls is tensor of shape [batch_size, num_anchor_this_level, 1]
+    :param reg: list, len(cls) is fpn level num, each in reg is tensor of shape [batch_size, num_anchor_this_level, 4]
+    :param anchor: list, len(anchor) is fpn level num, each in cls is tensor of shape [num_anchor_this_level, 4]
+    :param pre_nms_top_k: int
+    :param post_nms_top_k: int
+    :param image_size: tuple (mage_h, image_w)
+    :param length_thresh: float length threshold for filtering tiny box
+    :param iou_thresh: float
+    :return:
+    """
+    image_h, image_w = image_size
+    boxes, scores = list(), list()
+    anchor = tf.split(anchor, [3 * 56 * 56, 3 * 28 * 28, 3 * 14 * 14, 3 * 7 * 7], axis=0)
+    for i, cls_level in enumerate(cls):
+        cls_level = tf.sigmoid(cls_level)
+        batch_size, feature_h, feature_w, num_anchor = cls_level.get_shape().as_list()
+        cls_level = tf.reshape(cls_level, [batch_size, feature_h * feature_h * num_anchor, 1])
+        reg_level = tf.reshape(reg[i], [batch_size, feature_h * feature_h * num_anchor, 4])
 
-        # top n
-        l3_box, l4_box, l5_box, l6_box = tf.split(box[i], anchor_num_per_level, axis=1)
-        l3_proposal = tf.gather(l3_box, y3_top_n_idx, axis=1, batch_dims=-1)
-        l4_proposal = tf.gather(l4_box, y4_top_n_idx, axis=1, batch_dims=-1)
-        l5_proposal = tf.gather(l5_box, y5_top_n_idx, axis=1, batch_dims=-1)
+        anchor_level = anchor[i]
+        num_boxes = anchor_level.get_shape().as_list()[0]
 
-        l3_cls = tf.gather(l3_cls, y3_top_n_idx, axis=1, batch_dims=-1)
-        l4_cls = tf.gather(l4_cls, y4_top_n_idx, axis=1, batch_dims=-1)
-        l5_cls = tf.gather(l5_cls, y5_top_n_idx, axis=1, batch_dims=-1)
+        box_level = reg_to_box(reg_level, anchor_level, batch_size)
+        box_level = clip_box(box_level, image_h, image_w, 'level{}'.format(i))
+        # box_level = remove_tiny(box_level, cls_level, length_thresh)
 
-        # clip proposal
-        h, w = image_size
-        l3_proposal = clip_box(l3_proposal, h, w, 'l3')
-        l4_proposal = clip_box(l4_proposal, h, w, 'l4')
-        l5_proposal = clip_box(l5_proposal, h, w, 'l5')
-        l6_proposal = clip_box(l6_box, h, w, 'l6')
+        level_pre_nms_top_k = min(num_boxes, pre_nms_top_k)
+        level_post_nms_top_k = min(num_boxes, post_nms_top_k)
+        level_box, level_score, _, _ = (
+            tf.image.combined_non_max_suppression(tf.expand_dims(box_level, axis=2),
+                                                  # tf.expand_dims(cls_level, axis=-1),
+                                                  cls_level,
+                                                  max_output_size_per_class=level_pre_nms_top_k,
+                                                  max_total_size=level_post_nms_top_k,
+                                                  iou_threshold=iou_thresh,
+                                                  score_threshold=0.0,
+                                                  clip_boxes=False))
+        boxes.append(level_box)
+        scores.append(level_score)
 
-        # remove tiny proposal
-        l3_proposal, l3_cls = remove_tiny(l3_proposal, l3_cls, length_thresh)
-        l4_proposal, l4_cls = remove_tiny(l4_proposal, l4_cls, length_thresh)
-        l5_proposal, l5_cls = remove_tiny(l5_proposal, l5_cls, length_thresh)
-        l6_proposal, l6_cls = remove_tiny(l6_proposal, l6_cls, length_thresh)
+    boxes = tf.concat(boxes, axis=1)
+    scores = tf.concat(scores, axis=1)
 
-        # nms
-        proposal = tf.concat([l3_proposal, l4_proposal, l5_proposal, l6_proposal], axis=1)
-        cls = tf.concat([l3_cls, l4_cls, l5_cls, l6_cls], axis=1)
-        print('proposal', proposal.shape)
-        proposal = nms(proposal, cls, top_n, iou_thresh)
-        print('proposal', proposal.shape)
-        proposals.append(proposal)
+    num_valid_boxes = boxes.get_shape().as_list()[-2]
+    overall_top_k = min(num_valid_boxes, post_nms_top_k)
 
-    # proposal = tf.expand_dims(proposal, -1)
-    # proposal = tf.image.crop_and_resize(proposal,
-    #                                     tf.constant([[0.2, 0.3, 0.4, 0.5]]),
-    #                                     tf.constant([0]),
-    #                                     tf.constant([2, 2]))
-    return tf.stack(proposals, axis=0)
+    selected_boxes, selected_scores = top_k_boxes(boxes, scores, k=overall_top_k)
+    return selected_boxes, selected_scores
