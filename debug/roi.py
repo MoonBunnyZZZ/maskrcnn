@@ -97,9 +97,9 @@ def cal_reg_target(gt_box, proposal, weights=(1.0, 1.0, 1.0, 1.0)):
     """
     wx, wy, ww, wh = weights[0], weights[1], weights[2], weights[3]
 
-    proposal_x1, proposal_y1, proposal_x2, proposal_y2 = tf.split(proposal, [1, 1, 1, 1], axis=1)
+    proposal_x1, proposal_y1, proposal_x2, proposal_y2 = tf.split(proposal, [1, 1, 1, 1], axis=-1)
 
-    gt_box_x1, gt_box_y1, gt_box_x2, gt_box_y2 = tf.split(gt_box, [1, 1, 1, 1], axis=1)
+    gt_box_x1, gt_box_y1, gt_box_x2, gt_box_y2 = tf.split(gt_box, [1, 1, 1, 1], axis=-1)
 
     ex_widths = proposal_x2 - proposal_x1
     ex_heights = proposal_y2 - proposal_y1
@@ -116,7 +116,7 @@ def cal_reg_target(gt_box, proposal, weights=(1.0, 1.0, 1.0, 1.0)):
     targets_dw = ww * tf.math.log(gt_widths / ex_widths)
     targets_dh = wh * tf.math.log(gt_heights / ex_heights)
 
-    targets = tf.concat([targets_dx, targets_dy, targets_dw, targets_dh], axis=1)
+    targets = tf.concat([targets_dx, targets_dy, targets_dw, targets_dh], axis=-1)
     return targets
 
 
@@ -202,9 +202,10 @@ def select_train_sample(gt_box, proposal, gt_label):
 # encode_flag_and_match_box(boxes1, boxes2, boxes3)
 # select_train_sample(boxes1, boxes2, boxes3)
 # cal_reg_target  test
-# boxes1 = np.random.rand(3, 4)
-# boxes2 = np.random.rand(3, 4)
-# cal_reg_target(boxes1, boxes2)
+# boxes1 = np.random.rand(2,3, 4)
+# boxes2 = np.random.rand(2,3, 4)
+# out = cal_reg_target(boxes1, boxes2)
+# print(out.shape)
 
 # balanced_sample test
 # boxes1 = tf.constant(np.random.rand(2, 1000, 1))
@@ -221,3 +222,14 @@ def select_train_sample(gt_box, proposal, gt_label):
 # gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
 #
 # print(gather_nd_indices)
+# box = tf.constant([[0, 1, 1],
+#                    [0, 0, 1]])
+# target = tf.constant(np.random.rand(2,3,4))
+# equal = tf.equal(box, 1)
+# print(equal)
+# exp = tf.expand_dims(equal, axis=-1)
+# tile = tf.tile(exp, [1, 1, 4])
+# print(tile)
+# where = tf.where(tile, tf.zeros_like(target), target)
+# print(target)
+# print(where)
