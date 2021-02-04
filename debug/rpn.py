@@ -5,14 +5,14 @@ from debug.box_ops import clip_box, reg_to_box, top_k_boxes
 
 
 def rpn(x, in_channels, num_anchors):
-    p3, p4, p5, p6 = x
+    p3, p4, p5 = x
     conv = Conv2D(in_channels, 3, 1, 'same', activation='relu', name='rpn_conv')
     cls_conv = Conv2D(num_anchors, 1, 1, 'same', activation='sigmoid', name='rpn_cls_conv')
     reg_conv = Conv2D(num_anchors * 4, 1, 1, 'same', name='rpn_reg_conv')
 
     cls_out = list()
     reg_out = list()
-    for feature in [p3, p4, p5, p6]:
+    for feature in [p3, p4, p5]:
         m = conv(feature)
         y_cls = cls_conv(m)
         y_reg = reg_conv(m)
@@ -22,7 +22,7 @@ def rpn(x, in_channels, num_anchors):
     return cls_out, reg_out
 
 
-def generate_proposal(cls, reg, anchor, pre_nms_top_k, post_nms_top_k, image_size, iou_thresh, length_thresh):
+def generate_proposal(cls, reg, anchor, pre_nms_top_k, post_nms_top_k, image_size, iou_thresh):
     """
 
     :param cls: list, len(cls) is fpn level num, each in cls is tensor of shape [batch_size, num_anchor_this_level, 1]
@@ -37,7 +37,7 @@ def generate_proposal(cls, reg, anchor, pre_nms_top_k, post_nms_top_k, image_siz
     """
     image_h, image_w = image_size
     boxes, scores = list(), list()
-    anchor = tf.split(anchor, [3 * 56 * 56, 3 * 28 * 28, 3 * 14 * 14, 3 * 7 * 7], axis=0)
+    # anchor = tf.split(anchor, [3 * 56 * 56, 3 * 28 * 28, 3 * 14 * 14], axis=0)
     for i, cls_level in enumerate(cls):
         cls_level = tf.sigmoid(cls_level)
         batch_size, feature_h, feature_w, num_anchor = cls_level.get_shape().as_list()

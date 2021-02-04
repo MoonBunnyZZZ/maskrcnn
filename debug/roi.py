@@ -30,13 +30,15 @@ def box_iou(boxes1, boxes2):
 
 def match_proposal(match_quality_matrix, low_threshold=0.3, high_threshold=0.7):
     """
-        match_quality_matrix shape:[batch_size, gt_num, 4]
+        match_quality_matrix shape:[batch_size, gt_num, proposal_num]
+        return shape:[batch_size, proposal_num]
     """
     matched_vals = tf.reduce_max(match_quality_matrix, axis=1)
     matches = tf.argmax(match_quality_matrix, axis=1)
 
-    below_low_threshold = matched_vals < low_threshold
-    between_thresholds = (matched_vals >= low_threshold) & (matched_vals < high_threshold)
+    below_low_threshold = tf.less(matched_vals, low_threshold)
+    between_thresholds = tf.logical_and(tf.greater_equal(matched_vals, low_threshold),
+                                        tf.less(matched_vals, high_threshold))
 
     below_idx = tf.where(below_low_threshold)
     below_update = tf.tile(tf.constant(np.array([-1], dtype=np.int64)),
@@ -90,8 +92,8 @@ def encode_flag_and_match_box(gt_box, proposal, gt_label):
 
 def cal_reg_target(gt_box, proposal, weights=(1.0, 1.0, 1.0, 1.0)):
     """
-    :param gt_box: shape [N, 4]
-    :param proposal: shape [N, 4]
+    :param gt_box: shape [N, 4] or [batch_size, N ,4]
+    :param proposal: shape [N, 4] or [batch_size, N ,4]
     :param weights:
     :return:
     """
@@ -123,8 +125,6 @@ def cal_reg_target(gt_box, proposal, weights=(1.0, 1.0, 1.0, 1.0)):
 def balanced_sample(flags):
     """
     :param flags: shape [batch_size, N, 1]
-    :param proposal: shape [batch_size, N, 4]
-    :param gt_box: shape [batch_size, N, 4]
     :return:
     """
     selected_sample = []
@@ -151,13 +151,13 @@ def balanced_sample(flags):
                                            tf.ones([num_pos + num_neg]),
                                            tf.constant([num_proposal], dtype=tf.int64))
         selected_sample.append(idx_per_image_mask)
-    select_sample_idx = tf.stack(selected_sample, axis=0)
+    select_sample_mask = tf.stack(selected_sample, axis=0)
     # _, sampled_indices = tf.nn.top_k(tf.cast(select_sample_idx, dtype=tf.int32), k=4, sorted=True)
     # sampled_indices_shape = tf.shape(sampled_indices)
     # batch_indices = (tf.expand_dims(tf.range(sampled_indices_shape[0]), axis=-1) *
     #                  tf.ones([1, sampled_indices_shape[-1]], dtype=tf.int32))
     # gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
-    return select_sample_idx
+    return select_sample_mask
 
 
 def select_train_sample(gt_box, proposal, gt_label):
@@ -180,56 +180,62 @@ def select_train_sample(gt_box, proposal, gt_label):
     return sampled_proposal, sampled_gt_box, sampled_gt_label, select_sample_idx
 
 
-# encode_flag_and_match_box  test
-# import cv2
-#
-# img = np.random.randint(255, 256, (448, 448, 3)).astype(np.int8)
-# b2 = np.reshape(boxes2, (-1, 4)).tolist()
-# b1 = np.reshape(boxes1, (-1, 4)).tolist()
-# for x1, y1, x2, y2 in b2:
-#     img = cv2.line(img, (x1, y1), (x1, y2), (0, 0, 255))
-#     img = cv2.line(img, (x1, y2), (x2, y2), (0, 0, 255))
-#     img = cv2.line(img, (x2, y2), (x2, y1), (0, 0, 255))
-#     img = cv2.line(img, (x2, y1), (x1, y1), (0, 0, 255))
-#
-# for x1, y1, x2, y2 in b1:
-#     img = cv2.line(img, (x1, y1), (x1, y2), (0, 255, 0))
-#     img = cv2.line(img, (x1, y2), (x2, y2), (0, 255, 0))
-#     img = cv2.line(img, (x2, y2), (x2, y1), (0, 255, 0))
-#     img = cv2.line(img, (x2, y1), (x1, y1), (0, 255, 0))
-# cv2.imshow('dd', img)
-# cv2.waitKey(0)
-# encode_flag_and_match_box(boxes1, boxes2, boxes3)
-# select_train_sample(boxes1, boxes2, boxes3)
-# cal_reg_target  test
-# boxes1 = np.random.rand(2,3, 4)
-# boxes2 = np.random.rand(2,3, 4)
-# out = cal_reg_target(boxes1, boxes2)
-# print(out.shape)
+if __name__ == '__main__':
+    # encode_flag_and_match_box  test
+    # import cv2
+    #
+    # img = np.random.randint(255, 256, (448, 448, 3)).astype(np.int8)
+    # b2 = np.reshape(boxes2, (-1, 4)).tolist()
+    # b1 = np.reshape(boxes1, (-1, 4)).tolist()
+    # for x1, y1, x2, y2 in b2:
+    #     img = cv2.line(img, (x1, y1), (x1, y2), (0, 0, 255))
+    #     img = cv2.line(img, (x1, y2), (x2, y2), (0, 0, 255))
+    #     img = cv2.line(img, (x2, y2), (x2, y1), (0, 0, 255))
+    #     img = cv2.line(img, (x2, y1), (x1, y1), (0, 0, 255))
+    #
+    # for x1, y1, x2, y2 in b1:
+    #     img = cv2.line(img, (x1, y1), (x1, y2), (0, 255, 0))
+    #     img = cv2.line(img, (x1, y2), (x2, y2), (0, 255, 0))
+    #     img = cv2.line(img, (x2, y2), (x2, y1), (0, 255, 0))
+    #     img = cv2.line(img, (x2, y1), (x1, y1), (0, 255, 0))
+    # cv2.imshow('dd', img)
+    # cv2.waitKey(0)
+    # encode_flag_and_match_box(boxes1, boxes2, boxes3)
+    # select_train_sample(boxes1, boxes2, boxes3)
+    # cal_reg_target  test
+    # boxes1 = np.random.rand(2,3, 4)
+    # boxes2 = np.random.rand(2,3, 4)
+    # out = cal_reg_target(boxes1, boxes2)
+    # print(out.shape)
 
-# balanced_sample test
-# boxes1 = tf.constant(np.random.rand(2, 1000, 1))
-# boxes2 = tf.constant(np.random.rand(2000, 4))
-# boxes3 = tf.constant(np.random.rand(3, 4))
-# out = balanced_sample(boxes1)
-# _, sampled_indices = tf.nn.top_k(tf.cast(out, dtype=tf.int32),
-#                                  k=4,
-#                                  sorted=True)
-# sampled_indices_shape = tf.shape(sampled_indices)
-# batch_indices = (
-#         tf.expand_dims(tf.range(sampled_indices_shape[0]), axis=-1) *
-#         tf.ones([1, sampled_indices_shape[-1]], dtype=tf.int32))
-# gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
-#
-# print(gather_nd_indices)
-# box = tf.constant([[0, 1, 1],
-#                    [0, 0, 1]])
-# target = tf.constant(np.random.rand(2,3,4))
-# equal = tf.equal(box, 1)
-# print(equal)
-# exp = tf.expand_dims(equal, axis=-1)
-# tile = tf.tile(exp, [1, 1, 4])
-# print(tile)
-# where = tf.where(tile, tf.zeros_like(target), target)
-# print(target)
-# print(where)
+    boxes1 = tf.constant(np.random.rand(2, 3, 4))  # gt
+    boxes2 = tf.constant(np.random.rand(2, 5, 4))  # anchor
+    out = box_iou(boxes1, boxes2)
+    print(out.shape)
+    print(match_proposal(out).shape)
+    # balanced_sample test
+    # boxes1 = tf.constant(np.random.rand(2, 1000, 1))
+    # boxes2 = tf.constant(np.random.rand(2000, 4))
+    # boxes3 = tf.constant(np.random.rand(3, 4))
+    # out = balanced_sample(boxes1)
+    # _, sampled_indices = tf.nn.top_k(tf.cast(out, dtype=tf.int32),
+    #                                  k=4,
+    #                                  sorted=True)
+    # sampled_indices_shape = tf.shape(sampled_indices)
+    # batch_indices = (
+    #         tf.expand_dims(tf.range(sampled_indices_shape[0]), axis=-1) *
+    #         tf.ones([1, sampled_indices_shape[-1]], dtype=tf.int32))
+    # gather_nd_indices = tf.stack([batch_indices, sampled_indices], axis=-1)
+    #
+    # print(gather_nd_indices)
+    # box = tf.constant([[0, 1, 1],
+    #                    [0, 0, 1]])
+    # target = tf.constant(np.random.rand(2,3,4))
+    # equal = tf.equal(box, 1)
+    # print(equal)
+    # exp = tf.expand_dims(equal, axis=-1)
+    # tile = tf.tile(exp, [1, 1, 4])
+    # print(tile)
+    # where = tf.where(tile, tf.zeros_like(target), target)
+    # print(target)
+    # print(where)

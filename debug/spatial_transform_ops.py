@@ -101,10 +101,10 @@ def compute_grid_positions(boxes, boundaries, output_size, sample_offset):
     box_grid_x = []
     box_grid_y = []
     for i in range(output_size):
-        box_grid_x.append(boxes[:, :, 1] +
-                          (i + sample_offset) * boxes[:, :, 3] / output_size)
-        box_grid_y.append(boxes[:, :, 0] +
+        box_grid_x.append(boxes[:, :, 0] +
                           (i + sample_offset) * boxes[:, :, 2] / output_size)
+        box_grid_y.append(boxes[:, :, 1] +
+                          (i + sample_offset) * boxes[:, :, 3] / output_size)
     box_grid_x = tf.stack(box_grid_x, axis=2)
     box_grid_y = tf.stack(box_grid_y, axis=2)
 
@@ -357,8 +357,8 @@ def multilevel_crop_and_resize(features, boxes, output_size=7):
         height_dim_sizes = tf.constant(feature_widths, tf.int32)
 
         # Assigns boxes to the right level.
-        box_width = boxes[:, :, 3] - boxes[:, :, 1]
-        box_height = boxes[:, :, 2] - boxes[:, :, 0]
+        box_width = boxes[:, :, 2] - boxes[:, :, 0]
+        box_height = boxes[:, :, 3] - boxes[:, :, 1]
         areas_sqrt = tf.sqrt(box_height * box_width)
         levels = tf.cast(
             tf.math.floordiv(

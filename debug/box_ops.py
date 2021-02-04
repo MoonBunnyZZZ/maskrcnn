@@ -84,8 +84,8 @@ def reg_to_box(reg, anchor, batch_size=1):
 
         wa = xa2 - xa1
         ha = ya2 - ya1
-        xa = xa1 + wa * 0.5
-        ya = ya1 + ha * 0.5
+        xa = xa1 + wa * tf.convert_to_tensor(0.5)
+        ya = ya1 + ha * tf.convert_to_tensor(0.5)
 
         x1 = xa - wa * tx
         x2 = xa + wa * tx
